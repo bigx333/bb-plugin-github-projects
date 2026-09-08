@@ -9,6 +9,14 @@ Create and import GitHub repositories directly from BB's native project picker a
 - **Account Repository Import**: Browse and import existing repositories from connected GitHub accounts, automatically filtering out already cloned or registered projects.
 - **CLI & Agent Commands**: Manage projects via the `bb gh-project` CLI and agent skill.
 
+## Screenshots
+
+### Native Project Picker Dropdown
+![Native Picker Dropdown](docs/screenshots/picker-dropdown.png)
+
+### Import from GitHub Modal
+![Import from GitHub Modal](docs/screenshots/import-modal.png)
+
 ## Commands
 
 ```bash
