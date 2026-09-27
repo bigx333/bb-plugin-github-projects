@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { parseGitHubRepo, pathExists, resolveProjectPath, validateRepoName, verifyExistingImport } from "./project-paths";
 
 const execFileAsync = promisify(execFile);
 
@@ -85,15 +86,6 @@ async function getAuthenticatedUser(): Promise<string | null> {
     return user.length > 0 ? user : null;
   } catch {
     return null;
-  }
-}
-
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fs.access(p);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -187,6 +179,60 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  async function registerProject(name: string, projectPath: string, gitRemoteUrl: string) {
+    const hostId = await getLocalHostId(bb);
+    const project = await bb.sdk.projects.create({
+      name,
+      source: { hostId, type: "local_path", path: projectPath },
+    });
+    return {
+      ok: true,
+      projectId: project.id,
+      projectName: project.name,
+      projectPath,
+      gitRemoteUrl,
+    };
+  }
+
+  async function createProject(name: string, description: string | undefined, isPrivate: boolean, targetDir?: string) {
+    const cleanName = validateRepoName(name.trim());
+    const { defaultProjectsDir } = await settings.get();
+    const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
+    const resolvedPath = resolveProjectPath(parentDir, cleanName, targetDir);
+    if (await pathExists(resolvedPath)) {
+      throw new Error(`Project directory already exists: ${resolvedPath}`);
+    }
+    await getLocalHostId(bb);
+    const githubUser = await getAuthenticatedUser();
+    if (!githubUser) throw new Error("GitHub CLI is not authenticated.");
+    const slug = parseGitHubRepo(`${githubUser}/${cleanName}`).slug;
+
+    await fs.mkdir(parentDir, { recursive: true });
+    bb.log.info(`Creating GitHub project ${slug} at ${resolvedPath}`);
+    const ghArgs = ["repo", "create", slug, isPrivate ? "--private" : "--public", "--add-readme"];
+    if (description?.trim()) ghArgs.push("--description", description.trim());
+    await runCmd("gh", ghArgs);
+    await runCmd("gh", ["repo", "clone", slug, resolvedPath]);
+    const gitRemoteUrl = await verifyExistingImport(resolvedPath, slug);
+    return registerProject(cleanName, resolvedPath, gitRemoteUrl);
+  }
+
+  async function importProject(nameWithOwner: string, targetDir?: string) {
+    const { name, slug } = parseGitHubRepo(nameWithOwner.trim());
+    const { defaultProjectsDir } = await settings.get();
+    const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
+    const resolvedPath = resolveProjectPath(parentDir, name, targetDir);
+    await getLocalHostId(bb);
+    await fs.mkdir(parentDir, { recursive: true });
+
+    bb.log.info(`Importing GitHub repo ${slug} to ${resolvedPath}`);
+    if (!(await pathExists(resolvedPath))) {
+      await runCmd("gh", ["repo", "clone", slug, resolvedPath]);
+    }
+    const gitRemoteUrl = await verifyExistingImport(resolvedPath, slug);
+    return registerProject(name, resolvedPath, gitRemoteUrl);
+  }
+
   // Register RPC Handlers
   bb.rpc.register(rpcContract, {
     async get_defaults() {
@@ -202,125 +248,11 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async create_project({ name, description, isPrivate, targetDir }) {
-      const { defaultProjectsDir } = await settings.get();
-      const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
-      const cleanName = name.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
-      const resolvedPath = targetDir ? path.resolve(targetDir) : path.join(parentDir, cleanName);
-
-      bb.log.info(`Creating GitHub project ${cleanName} at ${resolvedPath}`);
-
-      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-
-      const exists = await pathExists(resolvedPath);
-      let gitRemoteUrl = "";
-
-      if (!exists) {
-        const ghArgs = [
-          "repo",
-          "create",
-          cleanName,
-          isPrivate ? "--private" : "--public",
-          "--add-readme",
-          "--clone",
-        ];
-        if (description?.trim()) {
-          ghArgs.push("--description", description.trim());
-        }
-
-        await runCmd("gh", ghArgs, path.dirname(resolvedPath));
-
-        try {
-          const { stdout } = await runCmd("git", ["-C", resolvedPath, "remote", "get-url", "origin"]);
-          gitRemoteUrl = stdout.trim();
-        } catch {
-          // remote url fallback
-        }
-      } else {
-        try {
-          const { stdout } = await runCmd("git", ["-C", resolvedPath, "remote", "get-url", "origin"]);
-          gitRemoteUrl = stdout.trim();
-        } catch {
-          await runCmd("git", ["-C", resolvedPath, "init"]);
-          const ghArgs = [
-            "repo",
-            "create",
-            cleanName,
-            isPrivate ? "--private" : "--public",
-            "--source",
-            resolvedPath,
-            "--push",
-          ];
-          if (description?.trim()) {
-            ghArgs.push("--description", description.trim());
-          }
-          await runCmd("gh", ghArgs);
-          const { stdout } = await runCmd("git", ["-C", resolvedPath, "remote", "get-url", "origin"]);
-          gitRemoteUrl = stdout.trim();
-        }
-      }
-
-      const hostId = await getLocalHostId(bb);
-
-      const project = await bb.sdk.projects.create({
-        name: cleanName,
-        source: {
-          hostId,
-          type: "local_path",
-          path: resolvedPath,
-        },
-      });
-
-      return {
-        ok: true,
-        projectId: project.id,
-        projectName: project.name,
-        projectPath: resolvedPath,
-        gitRemoteUrl: gitRemoteUrl || undefined,
-      };
+      return createProject(name, description, isPrivate, targetDir);
     },
 
     async import_project({ nameWithOwner, targetDir }) {
-      const { defaultProjectsDir } = await settings.get();
-      const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
-      const repoName = nameWithOwner.includes("/") ? nameWithOwner.split("/")[1] : nameWithOwner;
-      const cleanName = repoName.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
-      const resolvedPath = targetDir ? path.resolve(targetDir) : path.join(parentDir, cleanName);
-
-      bb.log.info(`Importing GitHub repo ${nameWithOwner} to ${resolvedPath}`);
-
-      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-
-      const exists = await pathExists(resolvedPath);
-      let gitRemoteUrl = `https://github.com/${nameWithOwner}.git`;
-
-      if (!exists) {
-        await runCmd("gh", ["repo", "clone", nameWithOwner, resolvedPath]);
-        try {
-          const { stdout } = await runCmd("git", ["-C", resolvedPath, "remote", "get-url", "origin"]);
-          gitRemoteUrl = stdout.trim();
-        } catch {
-          // fallback
-        }
-      }
-
-      const hostId = await getLocalHostId(bb);
-
-      const project = await bb.sdk.projects.create({
-        name: cleanName,
-        source: {
-          hostId,
-          type: "local_path",
-          path: resolvedPath,
-        },
-      });
-
-      return {
-        ok: true,
-        projectId: project.id,
-        projectName: project.name,
-        projectPath: resolvedPath,
-        gitRemoteUrl,
-      };
+      return importProject(nameWithOwner, targetDir);
     },
   });
 
@@ -410,34 +342,15 @@ export default async function plugin(bb: BbPluginApi) {
           }
         }
 
-        const { defaultProjectsDir } = await settings.get();
-        const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
-        const repoName = nameWithOwner.includes("/") ? nameWithOwner.split("/")[1] : nameWithOwner;
-        const cleanName = repoName.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
-        const resolvedPath = dir ? path.resolve(dir) : path.join(parentDir, cleanName);
-
-        await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-
-        const exists = await pathExists(resolvedPath);
-        if (!exists) {
-          await runCmd("gh", ["repo", "clone", nameWithOwner, resolvedPath]);
+        try {
+          const project = await importProject(nameWithOwner, dir);
+          return {
+            exitCode: 0,
+            stdout: `Successfully imported and registered BB project: ${project.projectName} (${project.projectId}) at ${project.projectPath}\n`,
+          };
+        } catch (error) {
+          return { exitCode: 1, stderr: `Error: ${error instanceof Error ? error.message : String(error)}\n` };
         }
-
-        const hostId = await getLocalHostId(bb);
-
-        const project = await bb.sdk.projects.create({
-          name: cleanName,
-          source: {
-            hostId,
-            type: "local_path",
-            path: resolvedPath,
-          },
-        });
-
-        return {
-          exitCode: 0,
-          stdout: `Successfully imported and registered BB project: ${project.name} (${project.id}) at ${resolvedPath}\n`,
-        };
       }
 
       if (sub === "create") {
@@ -460,39 +373,15 @@ export default async function plugin(bb: BbPluginApi) {
           }
         }
 
-        const { defaultProjectsDir } = await settings.get();
-        const parentDir = defaultProjectsDir || DEFAULT_PARENT_DIR;
-        const resolvedPath = dir ? path.resolve(dir) : path.join(parentDir, name);
-
-        await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
-
-        const ghArgs = [
-          "repo",
-          "create",
-          name,
-          isPublic ? "--public" : "--private",
-          "--add-readme",
-          "--clone",
-        ];
-        if (description) ghArgs.push("--description", description);
-
-        await runCmd("gh", ghArgs, path.dirname(resolvedPath));
-
-        const hostId = await getLocalHostId(bb);
-
-        const project = await bb.sdk.projects.create({
-          name,
-          source: {
-            hostId,
-            type: "local_path",
-            path: resolvedPath,
-          },
-        });
-
-        return {
-          exitCode: 0,
-          stdout: `Successfully created GitHub repository and registered BB project: ${project.name} (${project.id}) at ${resolvedPath}\n`,
-        };
+        try {
+          const project = await createProject(name, description, !isPublic, dir);
+          return {
+            exitCode: 0,
+            stdout: `Successfully created GitHub repository and registered BB project: ${project.projectName} (${project.projectId}) at ${project.projectPath}\n`,
+          };
+        } catch (error) {
+          return { exitCode: 1, stderr: `Error: ${error instanceof Error ? error.message : String(error)}\n` };
+        }
       }
 
       return { exitCode: 1, stderr: `Unknown command: ${sub}\n` };

@@ -17,3 +17,5 @@ Use `bb gh-project` to create GitHub repositories or import existing ones from c
   Lists existing GitHub repositories from connected accounts that have not been cloned or registered into BB yet.
 - `bb gh-project list`
   Lists all projects currently registered in BB with their local paths and GitHub remote URLs.
+
+`--dir` must be an absolute path directly inside the plugin's configured Default Projects Directory. Import only reuses an existing directory when its `origin` matches the requested GitHub repository. Create requires a new directory.
