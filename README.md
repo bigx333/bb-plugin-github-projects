@@ -36,3 +36,4 @@ bb gh-project list
 ## Requirements
 
 - GitHub CLI (`gh`) installed and authenticated on the machine running BB.
+- Set **Default Projects Directory** in the plugin settings to choose where repositories are cloned. It defaults to `~/Projects` on the BB server machine.

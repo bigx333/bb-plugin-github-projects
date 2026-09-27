@@ -4,7 +4,7 @@ Create and import GitHub repositories directly from BB's native project picker a
 
 - **New project on GitHub** entry directly in BB's native project picker dropdown. It opens a focused, one-line prompt for the repository name and creates a private GitHub repository automatically.
 - **Import from GitHub** entry directly in the project picker dropdown. It lists all repositories from your connected GitHub account that have not yet been cloned or added to BB, with instant search and one-click import.
-- Automatic local cloning into your projects directory and registration with BB's project database and Orca workspace fleet.
+- Automatic local cloning into the configured projects directory and registration with BB's project database.
 - A `bb gh-project` CLI command for creating, importing, and listing GitHub projects from your terminal.
 - An agent skill (`gh-project`) allowing AI coding agents to discover and create GitHub projects autonomously.
 
@@ -22,3 +22,5 @@ The plugin connects with the GitHub CLI (`gh`) on the host to authenticate and m
 ## Requirements
 
 Requires the GitHub CLI (`gh`) to be installed and authenticated on the machine where BB runs.
+
+Set **Default Projects Directory** in the plugin settings to choose where repositories are cloned. It defaults to `~/Projects` on the BB server machine.

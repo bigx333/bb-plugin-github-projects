@@ -1,31 +1,25 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_PARENT_DIR = "/home/daniel/projects";
-
-const DEFAULT_ENV = {
-  ...process.env,
-  PATH: [
-    "/home/daniel/bin",
-    "/home/daniel/.local/bin",
-    process.env.PATH,
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-  ]
-    .filter(Boolean)
-    .join(":"),
-  HOME: process.env.HOME || "/home/daniel",
-};
+const DEFAULT_PARENT_DIR = path.join(os.homedir(), "Projects");
 
 async function runCmd(cmd: string, args: string[], cwd?: string) {
-  return execFileAsync(cmd, args, { cwd, env: DEFAULT_ENV });
+  return execFileAsync(cmd, args, { cwd });
+}
+
+async function getLocalHostId(bb: BbPluginApi): Promise<string> {
+  const { primaryHostId } = await bb.sdk.system.config();
+  if (!primaryHostId) {
+    throw new Error("BB's local host is unavailable; cannot register a local project.");
+  }
+  return primaryHostId;
 }
 
 const repoItemSchema = z.object({
@@ -43,9 +37,7 @@ export const rpcContract = defineRpcContract({
   get_defaults: {
     input: z.null(),
     output: z.object({
-      defaultParentDir: z.string(),
       githubUser: z.string().nullable(),
-      connectedHostName: z.string(),
     }),
   },
   list_importable_repos: {
@@ -92,7 +84,7 @@ async function getAuthenticatedUser(): Promise<string | null> {
     const user = stdout.trim();
     return user.length > 0 ? user : null;
   } catch {
-    return "bottlebrushes";
+    return null;
   }
 }
 
@@ -119,7 +111,7 @@ async function getUnclonedRepos(bb: BbPluginApi, defaultParentDir: string): Prom
     ]);
     allRepos = JSON.parse(stdout);
   } catch (err) {
-    bb.log.error("Failed to list GitHub repos via gh CLI", { error: String(err) });
+    bb.log.error(`Failed to list GitHub repos via gh CLI: ${String(err)}`);
     return [];
   }
 
@@ -141,7 +133,7 @@ async function getUnclonedRepos(bb: BbPluginApi, defaultParentDir: string): Prom
       }
     }
   } catch (err) {
-    bb.log.warn("Could not inspect bb projects list", { error: String(err) });
+    bb.log.warn(`Could not inspect bb projects list: ${String(err)}`);
   }
 
   try {
@@ -171,18 +163,6 @@ async function getUnclonedRepos(bb: BbPluginApi, defaultParentDir: string): Prom
     // ignore
   }
 
-  const orcaWorkspaces = "/home/daniel/orca/workspaces";
-  try {
-    const entries = await fs.readdir(orcaWorkspaces, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        registeredNames.add(entry.name.toLowerCase());
-      }
-    }
-  } catch {
-    // ignore
-  }
-
   return allRepos.filter((r) => {
     const nameMatch = registeredNames.has(r.name.toLowerCase());
     const remoteMatch = registeredRemotes.has(r.nameWithOwner.toLowerCase());
@@ -197,7 +177,7 @@ export default async function plugin(bb: BbPluginApi) {
     defaultProjectsDir: {
       type: "string",
       label: "Default Projects Directory",
-      description: "Parent folder where newly cloned GitHub projects are stored.",
+      description: "Parent folder for cloned GitHub projects. Defaults to ~/Projects on the BB server machine.",
       default: DEFAULT_PARENT_DIR,
     },
     defaultPrivate: {
@@ -210,22 +190,8 @@ export default async function plugin(bb: BbPluginApi) {
   // Register RPC Handlers
   bb.rpc.register(rpcContract, {
     async get_defaults() {
-      const { defaultProjectsDir } = await settings.get();
       const githubUser = await getAuthenticatedUser();
-      let connectedHostName = "local";
-      try {
-        const hosts = await bb.sdk.hosts.list();
-        const connected = hosts.find((h) => h.status === "connected");
-        if (connected) connectedHostName = connected.name;
-      } catch {
-        // fallback
-      }
-
-      return {
-        defaultParentDir: defaultProjectsDir || DEFAULT_PARENT_DIR,
-        githubUser,
-        connectedHostName,
-      };
+      return { githubUser };
     },
 
     async list_importable_repos() {
@@ -293,14 +259,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
       }
 
-      let hostId = "host_7ya5am2erm";
-      try {
-        const hosts = await bb.sdk.hosts.list();
-        const connected = hosts.find((h) => h.status === "connected") ?? hosts[0];
-        if (connected) hostId = connected.id;
-      } catch {
-        // fallback to known host
-      }
+      const hostId = await getLocalHostId(bb);
 
       const project = await bb.sdk.projects.create({
         name: cleanName,
@@ -310,12 +269,6 @@ export default async function plugin(bb: BbPluginApi) {
           path: resolvedPath,
         },
       });
-
-      try {
-        await runCmd("orca", ["repo", "add", "--path", resolvedPath]);
-      } catch {
-        // Ignore if Orca daemon isn't running
-      }
 
       return {
         ok: true,
@@ -350,14 +303,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
       }
 
-      let hostId = "host_7ya5am2erm";
-      try {
-        const hosts = await bb.sdk.hosts.list();
-        const connected = hosts.find((h) => h.status === "connected") ?? hosts[0];
-        if (connected) hostId = connected.id;
-      } catch {
-        // fallback
-      }
+      const hostId = await getLocalHostId(bb);
 
       const project = await bb.sdk.projects.create({
         name: cleanName,
@@ -367,12 +313,6 @@ export default async function plugin(bb: BbPluginApi) {
           path: resolvedPath,
         },
       });
-
-      try {
-        await runCmd("orca", ["repo", "add", "--path", resolvedPath]);
-      } catch {
-        // ignore
-      }
 
       return {
         ok: true,
@@ -483,14 +423,7 @@ export default async function plugin(bb: BbPluginApi) {
           await runCmd("gh", ["repo", "clone", nameWithOwner, resolvedPath]);
         }
 
-        let hostId = "host_7ya5am2erm";
-        try {
-          const hosts = await bb.sdk.hosts.list();
-          const connected = hosts.find((h) => h.status === "connected") ?? hosts[0];
-          if (connected) hostId = connected.id;
-        } catch {
-          // fallback
-        }
+        const hostId = await getLocalHostId(bb);
 
         const project = await bb.sdk.projects.create({
           name: cleanName,
@@ -500,12 +433,6 @@ export default async function plugin(bb: BbPluginApi) {
             path: resolvedPath,
           },
         });
-
-        try {
-          await runCmd("orca", ["repo", "add", "--path", resolvedPath]);
-        } catch {
-          // ignore
-        }
 
         return {
           exitCode: 0,
@@ -551,14 +478,7 @@ export default async function plugin(bb: BbPluginApi) {
 
         await runCmd("gh", ghArgs, path.dirname(resolvedPath));
 
-        let hostId = "host_7ya5am2erm";
-        try {
-          const hosts = await bb.sdk.hosts.list();
-          const connected = hosts.find((h) => h.status === "connected") ?? hosts[0];
-          if (connected) hostId = connected.id;
-        } catch {
-          // fallback
-        }
+        const hostId = await getLocalHostId(bb);
 
         const project = await bb.sdk.projects.create({
           name,
@@ -568,12 +488,6 @@ export default async function plugin(bb: BbPluginApi) {
             path: resolvedPath,
           },
         });
-
-        try {
-          await runCmd("orca", ["repo", "add", "--path", resolvedPath]);
-        } catch {
-          // ignore
-        }
 
         return {
           exitCode: 0,

@@ -59,7 +59,7 @@ function CreateProjectModal() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [name, setName] = useState("");
-  const [githubUser, setGithubUser] = useState<string | null>("bottlebrushes");
+  const [githubUser, setGithubUser] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

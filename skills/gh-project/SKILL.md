@@ -10,7 +10,7 @@ Use `bb gh-project` to create GitHub repositories or import existing ones from c
 ## Commands
 
 - `bb gh-project create <name> [--public] [--description <desc>] [--dir <path>]`
-  Creates a new GitHub repository under the authenticated user (defaults to private), adds a README, clones it locally, registers it with BB, and links it in Orca.
+  Creates a new GitHub repository under the authenticated user (defaults to private), adds a README, clones it locally, and registers it with BB.
 - `bb gh-project import <owner/repo> [--dir <path>]`
   Clones an existing GitHub repository from connected accounts and registers it directly into BB.
 - `bb gh-project available`
